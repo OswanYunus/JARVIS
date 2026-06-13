@@ -4,27 +4,29 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>J.A.R.V.I.S</title>
+    <link rel="icon" type="image/png" href="/jarvis.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="stylesheet" href="/style.css">
   </head>
   <body>
     <main class="app">
       <aside class="sidebar">
-        <div>
+        <div class="brand">
           <p class="eyebrow">Local AI</p>
           <h1>J.A.R.V.I.S</h1>
         </div>
 
-        <label class="field">
-          <span>Model</span>
+        <div class="field">
+          <label for="modelSelect">Model</label>
           <select id="modelSelect"></select>
-        </label>
+        </div>
 
         <div class="status-line">
           <span>Tools</span>
           <strong id="toolStatus">Checking</strong>
         </div>
 
-        <button id="clearChat" class="secondary" type="button">Clear chat</button>
+        <button id="clearChat" class="btn-danger" type="button">Clear chat</button>
 
         <section class="rules-panel">
           <div class="rules-header">
@@ -35,11 +37,11 @@
         </section>
       </aside>
 
-      <section class="chat">
+      <section class="chat" id="chatArea">
         <div id="messages" class="messages"></div>
 
         <form id="chatForm" class="composer">
-          <textarea id="messageInput" placeholder="Ask J.A.R.V.I.S..." rows="2"></textarea>
+          <textarea id="messageInput" placeholder="Ask J.A.R.V.I.S anything..." rows="2"></textarea>
           <button id="sendButton" type="submit">Send</button>
         </form>
       </section>

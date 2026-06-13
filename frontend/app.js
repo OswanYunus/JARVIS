@@ -7,6 +7,14 @@ const rulesEditorEl = document.querySelector("#rulesEditor");
 const saveRulesEl = document.querySelector("#saveRules");
 const clearChatEl = document.querySelector("#clearChat");
 const toolStatusEl = document.querySelector("#toolStatus");
+const chatAreaEl = document.querySelector("#chatArea");
+
+// === Click anywhere in chat area to focus input ===
+chatAreaEl.addEventListener("click", (e) => {
+  // Don't steal focus if user clicked a button or the textarea itself
+  if (e.target.closest("button") || e.target === inputEl) return;
+  inputEl.focus();
+});
 
 function addMessage(role, content) {
   const node = document.createElement("div");
@@ -21,11 +29,8 @@ async function api(path, options = {}) {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
-
   const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.error || "Something went wrong.");
-  }
+  if (!response.ok) throw new Error(data.error || "Something went wrong.");
   return data;
 }
 
@@ -33,7 +38,6 @@ async function loadModels() {
   try {
     const data = await api("/api/models");
     modelSelectEl.innerHTML = "";
-
     const models = data.models.length ? data.models : [data.default];
     for (const model of models) {
       const option = document.createElement("option");
@@ -50,12 +54,10 @@ async function loadModels() {
 async function loadHistory() {
   const data = await api("/api/history");
   messagesEl.innerHTML = "";
-
   if (!data.messages.length) {
-    addMessage("system", "Ready. Pull a model, pick it here, and ask me something.");
+    addMessage("system", "Ready. Pick a model and ask me something.");
     return;
   }
-
   for (const message of data.messages) {
     addMessage(message.role, message.content);
   }
@@ -81,15 +83,12 @@ formEl.addEventListener("submit", async (event) => {
   inputEl.value = "";
   addMessage("user", message);
   sendButtonEl.disabled = true;
-  sendButtonEl.textContent = "Thinking";
+  sendButtonEl.textContent = "...";
 
   try {
     const data = await api("/api/chat", {
       method: "POST",
-      body: JSON.stringify({
-        message,
-        model: modelSelectEl.value,
-      }),
+      body: JSON.stringify({ message, model: modelSelectEl.value }),
     });
     addMessage("assistant", data.reply);
   } catch (err) {
@@ -104,13 +103,13 @@ formEl.addEventListener("submit", async (event) => {
 
 saveRulesEl.addEventListener("click", async () => {
   saveRulesEl.disabled = true;
-  saveRulesEl.textContent = "Saving";
+  saveRulesEl.textContent = "Saving...";
   try {
     await api("/api/rules", {
       method: "POST",
       body: JSON.stringify({ rules: rulesEditorEl.value }),
     });
-    addMessage("system", "Rules saved. New replies will use them.");
+    addMessage("system", "Rules saved.");
   } catch (err) {
     addMessage("system", err.message);
   } finally {
@@ -132,7 +131,14 @@ inputEl.addEventListener("keydown", (event) => {
   }
 });
 
+// Auto-resize textarea as user types
+inputEl.addEventListener("input", () => {
+  inputEl.style.height = "auto";
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + "px";
+});
+
 await loadModels();
 await loadRules();
 await loadState();
 await loadHistory();
+inputEl.focus();
