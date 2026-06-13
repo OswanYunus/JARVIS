@@ -1,4 +1,4 @@
-# J.A.R.V.I.S Local AI
+# J.A.R.V.I.S
 
 A small local AI chat app for Ollama. It has no login, saves chat history in SQLite, and lets you edit the assistant rules from the browser.
 
