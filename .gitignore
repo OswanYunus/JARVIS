@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+jarvis.db
+jarvis.db-*
+jarvis_state.json
+server.log
+server.err.log
