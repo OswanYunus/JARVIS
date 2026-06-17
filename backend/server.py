@@ -9,6 +9,10 @@ import sqlite3
 import subprocess
 import time
 import sys
+from typing import Any, Dict, Optional
+
+from planner import Planner
+from memory_manager import MemoryManager
 
 ROOT = Path(__file__).resolve().parents[1]
 DESKTOP = Path.home() / "Desktop"
@@ -19,6 +23,14 @@ STATE_PATH = ROOT / "jarvis_state.json"
 OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "llama3.2:3b"
 SAFEWORD = "underoos"
+
+planner = Planner(OLLAMA_URL)
+memory_manager = MemoryManager(ROOT)
+
+
+def find_memory_routine(message: str) -> Optional[Dict[str, Any]]:
+    return memory_manager.find_matching_routine(message)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Optional system-control imports (graceful fallback if not installed)
@@ -63,6 +75,8 @@ When you need to press a keyboard shortcut, respond with only this JSON:
 
 When you need to close or kill a running application, respond with only this JSON:
 {"tool": "close_app", "app": "blender"}
+When you need to uninstall an app, respond with only this JSON:
+{"tool": "uninstall_app", "app": "qbittorrent"}
 When you need to close a browser tab, website, or page, respond with only this JSON:
 {"tool": "close_browser_tab", "title": "youtube"}
 When you need to send a WhatsApp message to someone, respond with only this JSON:
@@ -305,6 +319,97 @@ def run_close_app(tool_call):
     if result.returncode != 0 and "not found" in output.lower():
         raise RuntimeError(f"No running process found matching '{exe}'.")
     return {"tool": "close_app", "app": exe, "message": f"Closed {exe}. {output}".strip()}
+
+
+def get_installed_apps():
+    """Query winget for list of installed apps with fuzzy matching support."""
+    try:
+        result = subprocess.run(
+            ["winget", "list", "--output", "json"],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode != 0:
+            return []
+        data = json.loads(result.stdout)
+        apps = []
+        for item in data.get("Installed", []):
+            name = item.get("Name", "").strip()
+            identifier = item.get("Id", "").strip()
+            if name:
+                apps.append({"name": name, "id": identifier})
+        return apps
+    except (json.JSONDecodeError, FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+
+
+def find_best_app_match(query, apps):
+    """Find the best matching app using fuzzy matching (case-insensitive, typo-tolerant)."""
+    if not apps:
+        return None
+    query_lower = query.lower()
+    exact_match = next((app for app in apps if app["name"].lower() == query_lower), None)
+    if exact_match:
+        return exact_match
+    names = [app["name"] for app in apps]
+    matches = difflib.get_close_matches(query_lower, [n.lower() for n in names], n=1, cutoff=0.65)
+    if matches:
+        idx = [n.lower() for n in names].index(matches[0])
+        return apps[idx]
+    matches = difflib.get_close_matches(query_lower, [n.lower() for n in names], n=1, cutoff=0.50)
+    if matches:
+        idx = [n.lower() for n in names].index(matches[0])
+        return apps[idx]
+    return None
+
+
+def run_uninstall_app(tool_call):
+    app_query = str(tool_call.get("app", "")).strip()
+    if not app_query:
+        raise ValueError("No app name provided.")
+    
+    installed_apps = get_installed_apps()
+    if not installed_apps:
+        raise RuntimeError(
+            "winget is not installed or not accessible. "
+            "Install winget from: https://github.com/microsoft/winget-cli/releases"
+        )
+    
+    best_match = find_best_app_match(app_query, installed_apps)
+    if not best_match:
+        close_matches = [app["name"] for app in installed_apps 
+                        if app_query.lower() in app["name"].lower()][:5]
+        suggestion = f"Did you mean: {', '.join(close_matches)}?" if close_matches else "App not found."
+        raise RuntimeError(f"App '{app_query}' not found in installed programs. {suggestion}")
+    
+    matched_name = best_match["name"]
+    matched_id = best_match["id"]
+    
+    try:
+        result = subprocess.run(
+            ["winget", "uninstall", "--id", matched_id, "--silent"],
+            capture_output=True, text=True, timeout=180
+        )
+        if result.returncode == 0:
+            return {
+                "tool": "uninstall_app",
+                "app": matched_name,
+                "message": f"Successfully uninstalled {matched_name}.",
+            }
+        if "admin" in result.stderr.lower() or "administrator" in result.stderr.lower():
+            return {
+                "tool": "uninstall_app",
+                "app": matched_name,
+                "message": (
+                    f"Uninstall started for {matched_name}, but it requires administrator privileges. "
+                    "The uninstaller may prompt for admin confirmation. Please approve when asked."
+                ),
+            }
+        output = (result.stdout + result.stderr).strip()
+        raise RuntimeError(f"Uninstall failed: {output[:200]}")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"Uninstall of {matched_name} timed out. It may still be running.")
+    except FileNotFoundError:
+        raise RuntimeError("winget command not found. Install it from: https://github.com/microsoft/winget-cli/releases")
 
 
 def run_close_browser_tab(tool_call):
@@ -625,7 +730,7 @@ def try_parse_tool_call(text):
     if isinstance(payload, dict) and payload.get("tool") in (
         "create_file", "create_github_repo", "push_project_to_github",
         "open_browser_tab", "taskbar_search", "switch_window", "type_text", "press_keys",
-        "close_app", "close_browser_tab", "whatsapp_message"
+        "close_app", "close_browser_tab", "uninstall_app", "whatsapp_message"
     ):
         return payload
     return None
@@ -652,6 +757,8 @@ def run_tool(tool_call):
         if app_target in WEB_TARGETS:
             return run_close_browser_tab({"tool": "close_browser_tab", "title": app_target})
         return run_close_app(tool_call)
+    if t == "uninstall_app":
+        return run_uninstall_app(tool_call)
     if t == "close_browser_tab":
         return run_close_browser_tab(tool_call)
     if t == "whatsapp_message":
@@ -754,6 +861,31 @@ def infer_git_push_tool(message):
     commit_message = match.group(1).strip() if match else "Update JARVIS project"
     return {"tool": "push_project_to_github", "message": commit_message}
 
+
+
+def infer_uninstall_tool(message):
+    lowered = message.lower()
+    if not any(word in lowered for word in ("uninstall", "remove", "delete", "get rid of", "remove program", "delete program")):
+        return None
+    if any(w in lowered for w in ("browser", "tab", "website", "site", "page", "folder", "file", "document", "note", "text", "message")):
+        return None
+    match = re.search(
+        r"(?:uninstall|remove|delete|get rid of|remove program|delete program)\s+(?:the\s+|my\s+)?(?:app|program|software|application|package)?\s*([\w][\w\s.-]{0,60}?)\s*$",
+        message,
+        re.IGNORECASE,
+    )
+    if not match:
+        match = re.search(
+            r"(?:uninstall|remove|delete|get rid of)\s+([\w][\w\s.-]{0,60}?)\b",
+            message,
+            re.IGNORECASE,
+        )
+    if not match:
+        return None
+    app = match.group(1).strip().rstrip(".,")
+    if not app:
+        return None
+    return {"tool": "uninstall_app", "app": app}
 
 
 def infer_close_app_tool(message):
@@ -891,6 +1023,9 @@ def choose_tool(message, model):
     github_tool = infer_github_tool(message)
     if github_tool:
         return github_tool
+    uninstall_tool = infer_uninstall_tool(message)
+    if uninstall_tool:
+        return uninstall_tool
     browser_tool = infer_browser_tool(message)
     if browser_tool:
         return browser_tool
@@ -904,49 +1039,21 @@ def choose_tool(message, model):
     if file_tool:
         return file_tool
 
-    # LLM planner fallback
-    planner_messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are the tool planner for a local personal assistant. "
-                "Return only valid JSON. No markdown. No explanation. "
-                "Available tools:\n"
-                '{"tool":"push_project_to_github","message":"..."}\n'
-                '{"tool":"create_github_repo","name":"...","visibility":"public"}\n'
-                '{"tool":"create_file","path":"...","content":"..."}\n'
-                '{"tool":"open_browser_tab","url":"https://..."}\n'
-                '{"tool":"taskbar_search","query":"..."}\n'
-                '{"tool":"switch_window","title":"..."}\n'
-                '{"tool":"type_text","text":"..."}\n'
-                '{"tool":"press_keys","keys":"ctrl+t"}\n'
-                '{"tool":"close_app","app":"appname.exe"}\n'
-                '{"tool":"close_browser_tab","title":"youtube"}\n'
-                '{"tool":"whatsapp_message","contact":"Name","text":"message"}\n'
-                'If no tool is needed, return {"tool":null}.'
-            ),
-        },
-        {"role": "user", "content": message},
-    ]
-    payload = {
-        "model": model,
-        "messages": planner_messages,
-        "stream": False,
-        "format": "json",
-        "options": {"temperature": 0, "num_ctx": 1024},
-    }
-    result = ollama_json("/api/chat", payload, method="POST")
+    routine_tool = find_memory_routine(message)
+    if routine_tool:
+        return routine_tool
+
+    memory_context = memory_manager.get_memory_context()
     try:
-        tool_call = json.loads(result["message"]["content"])
-    except json.JSONDecodeError:
-        return None
-    if isinstance(tool_call, dict) and tool_call.get("tool") in (
-        "create_file", "create_github_repo", "push_project_to_github",
-        "open_browser_tab", "taskbar_search", "switch_window", "type_text", "press_keys",
-        "close_app", "close_browser_tab", "whatsapp_message"
-    ):
-        return tool_call
-    return None
+        planner_tool = planner.plan_tool_call(
+            message,
+            model,
+            preferences=memory_context["preferences"],
+            routines=memory_context["routines"],
+        )
+    except Exception:
+        planner_tool = None
+    return planner_tool
 
 
 def summarize_tool_result(message, tool_result, model):
@@ -965,6 +1072,7 @@ def ollama_json(path, payload=None, method="GET"):
 
 
 def chat_with_ollama(message, model):
+    memory_manager.log_history({"role": "user", "content": message, "model": model})
     if SAFEWORD in message.lower():
         return disable_tools()
     if not tools_enabled():
@@ -975,6 +1083,12 @@ def chat_with_ollama(message, model):
     tool_call = choose_tool(message, model)
     if tool_call:
         tool_result = run_tool(tool_call)
+        memory_manager.log_history({
+            "role": "tool",
+            "tool_call": tool_call,
+            "result": tool_result,
+            "model": model,
+        })
         return summarize_tool_result(message, tool_result, model)
 
     recent = load_messages(limit=20)
